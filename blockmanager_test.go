@@ -6,7 +6,6 @@ import (
 	"io/ioutil"
 	"math/rand"
 	"os"
-	"sync"
 	"testing"
 
 	"github.com/btcsuite/btcd/chaincfg"
@@ -65,21 +64,17 @@ func setupBlockManager() (*blockManager, headerfs.BlockHeaderStore,
 	// Set up a chain service for the block manager. Each test should set
 	// custom query methods on this chain service.
 	cs := &ChainService{
-		BlockHeaders: hdrStore,
+		chainParams:      chaincfg.SimNetParams,
+		BlockHeaders:     hdrStore,
+		RegFilterHeaders: cfStore,
 	}
 
 	// Set up a blockManager with the chain service we defined.
-	bm := &blockManager{
-		server: cs,
-		blkHeaderProgressLogger: newBlockProgressLogger(
-			"Processed", "block", log,
-		),
-		fltrHeaderProgessLogger: newBlockProgressLogger(
-			"Verified", "filter header", log,
-		),
+	bm, err := newBlockManager(cs)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("unable to create "+
+			"blockmanager: %v", err)
 	}
-	bm.newHeadersSignal = sync.NewCond(&bm.newHeadersMtx)
-	bm.newFilterHeadersSignal = sync.NewCond(&bm.newFilterHeadersMtx)
 
 	return bm, hdrStore, cfStore, cleanUp, nil
 }
@@ -175,7 +170,10 @@ func generateHeaders(genesisBlockHeader *wire.BlockHeader,
 			// avoid mutation.
 			cfh := currentCFHeader
 			checkpoints = append(checkpoints, &cfh)
-			onCheckpoint(&currentCFHeader)
+
+			if onCheckpoint != nil {
+				onCheckpoint(&currentCFHeader)
+			}
 		}
 	}
 
@@ -217,7 +215,7 @@ func generateResponses(msgs []wire.Message,
 			genesisFilterHeader := headers.cfHeaders[0].FilterHash
 			prevFilterHeader = genesisFilterHeader
 
-			// Otherwise we use one of the created checkpoints.
+		// Otherwise we use one of the created checkpoints.
 		default:
 			j := q.StartHeight/wire.CFCheckptInterval - 1
 			prevFilterHeader = *headers.checkpoints[j]
@@ -305,9 +303,9 @@ func TestBlockManagerInitialInterval(t *testing.T) {
 		}
 
 		headers, err := generateHeaders(genesisBlockHeader,
-			genesisFilterHeader, func(*chainhash.Hash) {})
+			genesisFilterHeader, nil)
 		if err != nil {
-			t.Fatalf("unable to generate headers;: %v", err)
+			t.Fatalf("unable to generate headers: %v", err)
 		}
 
 		// Write all block headers but the genesis, since it is already
@@ -510,7 +508,7 @@ func TestBlockManagerInvalidInterval(t *testing.T) {
 				}
 			})
 		if err != nil {
-			t.Fatalf("unable to generate headers;: %v", err)
+			t.Fatalf("unable to generate headers: %v", err)
 		}
 
 		// Write all block headers but the genesis, since it is already
